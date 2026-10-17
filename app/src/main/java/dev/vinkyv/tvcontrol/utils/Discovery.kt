@@ -1,13 +1,13 @@
 package dev.vinkyv.tvcontrol.utils
 
-import android.app.Activity.WIFI_SERVICE
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -19,101 +19,78 @@ import javax.jmdns.ServiceListener
 
 data class DiscoveredDevice(
     val name: String = "",
-    val host: String = "",
     val port: Int = 0,
     val ip: String = "",
     val uuid: String = ""
 )
 
-class Discovery {
-     fun discover(context: Context, onResult: (List<DiscoveredDevice>) -> Unit) {
-         CoroutineScope(Dispatchers.IO).launch {
-             val devices = mutableListOf<DiscoveredDevice>()
-             var jmdns: JmDNS? = null
-             var multicastLock: WifiManager.MulticastLock? = null
+object Discovery {
+    private const val TAG = "Discovery"
+    private const val COMPANION_SERVICE = "_companion-link._tcp.local."
 
-             class CompanionListener : ServiceListener {
-                 override fun serviceAdded(event: ServiceEvent) {
-                     jmdns?.requestServiceInfo(
-                         event.type,
-                         event.name
-                     )
-                 }
+    /**
+     * Browses for Apple TVs (Companion link service) and emits the growing device list.
+     * Discovery runs until the collector cancels (e.g. with a timeout).
+     */
+    fun devices(context: Context): Flow<List<DiscoveredDevice>> = callbackFlow {
+        val devices = LinkedHashMap<String, DiscoveredDevice>()
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val multicastLock = wifiManager.createMulticastLock("AtvDiscovery").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        var jmdns: JmDNS? = null
 
-                 override fun serviceRemoved(event: ServiceEvent) {
-                 }
+        val listener = object : ServiceListener {
+            override fun serviceAdded(event: ServiceEvent) {
+                event.dns.requestServiceInfo(event.type, event.name, 1000)
+            }
 
-                 override fun serviceResolved(event: ServiceEvent) {
-                     val info = event.info
+            override fun serviceRemoved(event: ServiceEvent) = Unit
 
-                     val device = info.inet4Addresses.first().hostAddress?.let {
-                         DiscoveredDevice(
-                             name = info.name,
-                             host = info.hostAddresses.first(),
-                             port = info.port,
-                             ip = it,
-                             uuid = info.getPropertyString("rpMRtID")
-                         )
-                     }
-
-                     synchronized(devices) {
-                         if (!devices.contains(device)) {
-                             if (device != null) {
-                                 devices.add(device)
-                             }
-
-                             CoroutineScope(Dispatchers.Main).launch {
-                                 onResult(devices.toList())
-                             }
-                         }
-                     }
-                 }
-             }
-
-             try {
-                 val wifiManager =
-                     context.applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-
-                 multicastLock = wifiManager.createMulticastLock("JmDNSDiscovery")
-                 multicastLock.setReferenceCounted(true)
-                 multicastLock.acquire()
-
-                 val address = getWifiIpAddress() ?: throw IOException("No WIFI address found")
-
-                 jmdns = JmDNS.create(address)
-
-                 jmdns.addServiceListener("_companion-link._tcp.local.", CompanionListener())
-
-                 delay(5000)
-             } catch (e: Exception) {
-                 Log.e("JmDNS", e.stackTraceToString())
-             } finally {
-                 jmdns?.close()
-
-                 multicastLock?.let {
-                     if (it.isHeld) {
-                         it.release()
-                     }
-                 }
-             }
-         }
-    }
-
-    private fun getWifiIpAddress(): InetAddress? {
-        val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-
-        for (networkInterface in interfaces) {
-            if (!networkInterface.isUp || networkInterface.isLoopback) continue
-
-            val addresses = Collections.list(networkInterface.inetAddresses)
-
-            for (address in addresses) {
-                if (address is Inet4Address && !address.isLoopbackAddress) {
-                    return address
+            override fun serviceResolved(event: ServiceEvent) {
+                val info = event.info
+                val ip = info.inet4Addresses.firstOrNull()?.hostAddress ?: return
+                // rpMRtID is the stable Companion identifier; fall back to the service name
+                val uuid = info.getPropertyString("rpMRtID") ?: info.name
+                val device = DiscoveredDevice(name = info.name, port = info.port, ip = ip, uuid = uuid)
+                val snapshot = synchronized(devices) {
+                    if (devices[uuid] == device) return
+                    devices[uuid] = device
+                    devices.values.toList()
                 }
+                trySend(snapshot)
             }
         }
 
-        return null
+        try {
+            val address = getWifiIpAddress() ?: throw IOException("No Wi-Fi address found")
+            jmdns = JmDNS.create(address).apply { addServiceListener(COMPANION_SERVICE, listener) }
+        } catch (e: IOException) {
+            Log.e(TAG, "Discovery failed", e)
+            close(e)
+        }
+
+        awaitClose {
+            try {
+                jmdns?.removeServiceListener(COMPANION_SERVICE, listener)
+                jmdns?.close()
+            } catch (e: IOException) {
+                Log.w(TAG, "Failed to close JmDNS", e)
+            }
+            if (multicastLock.isHeld) multicastLock.release()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /** Prefer the Wi-Fi interface so mDNS isn't sent over mobile data. */
+    private fun getWifiIpAddress(): InetAddress? {
+        val candidates = Collections.list(NetworkInterface.getNetworkInterfaces())
+            .filter { it.isUp && !it.isLoopback && it.supportsMulticast() }
+            .sortedByDescending { it.name.startsWith("wlan") }
+
+        return candidates.firstNotNullOfOrNull { networkInterface ->
+            Collections.list(networkInterface.inetAddresses)
+                .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+        }
     }
 }

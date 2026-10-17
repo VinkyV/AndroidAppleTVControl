@@ -1,13 +1,14 @@
 package dev.vinkyv.tvcontrol
 
-import android.net.wifi.WifiManager
 import android.os.Bundle
-import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
@@ -18,47 +19,40 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SettingsRemote
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import dev.vinkyv.tvcontrol.protocol.codec.TlvValue
-import dev.vinkyv.tvcontrol.protocol.codec.writeTLV
 import dev.vinkyv.tvcontrol.ui.screens.AudioScreen
 import dev.vinkyv.tvcontrol.ui.screens.PairScreen
+import dev.vinkyv.tvcontrol.ui.screens.PinSubmitDialog
 import dev.vinkyv.tvcontrol.ui.screens.RemoteScreen
 import dev.vinkyv.tvcontrol.ui.screens.SettingsScreen
 import dev.vinkyv.tvcontrol.ui.theme.TVControlTheme
+import dev.vinkyv.tvcontrol.session.ConnectionState
 import dev.vinkyv.tvcontrol.viewmodel.MainViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.IOException
-import java.net.Inet4Address
-import java.net.InetAddress
-import java.net.NetworkInterface
-import java.util.Collections
-import javax.jmdns.JmDNS
 
 class MainActivity : ComponentActivity() {
-
-    private var jmdns: JmDNS? = null
-    private var multicastLock: WifiManager.MulticastLock? = null
     private val mainViewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,78 +65,41 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-
-        try {
-            jmdns?.close()
-        } catch (_: Exception) {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val up = when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP -> true
+            KeyEvent.KEYCODE_VOLUME_DOWN -> false
+            else -> return super.dispatchKeyEvent(event)
         }
-
-        multicastLock?.let {
-            if (it.isHeld) {
-                it.release()
-            }
-        }
-    }
-
-    private suspend fun discover() = withContext(Dispatchers.IO) {
-        try {
-            val wifiManager = getSystemService(WIFI_SERVICE) as WifiManager
-
-            multicastLock = wifiManager.createMulticastLock("JmDNSLock").apply {
-                setReferenceCounted(true)
-                acquire()
-            }
-
-            val address = getWifiIpAddress() ?: throw IOException("No WIFI address found")
-
-            jmdns = JmDNS.create(address).apply {
-                addServiceListener("_airplay._tcp.local.", CompanionListener())
-            }
-
-            Log.d("JmDNS", "Service discovery started")
-        } catch (e: Exception) {
-            Log.e("JmDNS", e.stackTraceToString())
+        return when (event.action) {
+            KeyEvent.ACTION_DOWN -> mainViewModel.onVolumeKey(up)
+                || super.dispatchKeyEvent(event)
+            // Swallow the matching key-up so the phone's volume panel doesn't appear
+            else -> mainViewModel.volumeKeysControlTv || super.dispatchKeyEvent(event)
         }
     }
+}
 
-    private fun getWifiIpAddress(): InetAddress? {
-        val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-
-        for (networkInterface in interfaces) {
-            if (!networkInterface.isUp || networkInterface.isLoopback) continue
-
-            val addresses = Collections.list(networkInterface.inetAddresses)
-
-            for (address in addresses) {
-                if (address is Inet4Address && !address.isLoopbackAddress) {
-                    return address
-                }
-            }
-        }
-
-        return null
-    }
-
-    private fun startPairing() {
-
-        writeTLV(
-            mapOf(
-                TlvValue.Method.ordinal to byteArrayOf(0x00),
-                TlvValue.SeqNo.ordinal to byteArrayOf(0x01)
-            )
-        )
-    }
+enum class Destination(val label: String, val route: String, val selectedIcon: ImageVector, val unselectedIcon: ImageVector) {
+    REMOTE("Remote", "remote", Icons.Filled.SettingsRemote, Icons.Outlined.SettingsRemote),
+    AUDIO("Audio", "audio", Icons.Filled.Audiotrack, Icons.Outlined.Audiotrack),
+    SETTINGS("Settings", "settings", Icons.Filled.Settings, Icons.Outlined.Settings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(mainViewModel: MainViewModel) {
+fun MainScreen(viewModel: MainViewModel) {
     val navController = rememberNavController()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
-    var currentTab by remember { mutableIntStateOf(0) }
-    val bottomNavigationItems = remember { BottomNavigationItems.entries.toTypedArray() }
+    val current = Destination.entries.firstOrNull { it.route == currentRoute } ?: Destination.REMOTE
+    val connection by viewModel.connection.collectAsState()
+    val busyStatus by viewModel.busyStatus.collectAsState()
+    val pinRequest by viewModel.pinRequest.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(viewModel) {
+        viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
+    }
 
     Scaffold(
         topBar = {
@@ -152,73 +109,83 @@ fun MainScreen(mainViewModel: MainViewModel) {
                     titleContentColor = MaterialTheme.colorScheme.primary
                 ),
                 title = {
-                    if (currentRoute != null) {
-                        Text(BottomNavigationItems.valueOf(currentRoute.uppercase()).label)
-                    }
+                    val deviceName = (connection as? ConnectionState.Connected)?.device?.name
+                    Text(if (deviceName.isNullOrEmpty()) current.label else "${current.label} · $deviceName")
                 }
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer
-            ) {
-                bottomNavigationItems.forEachIndexed { index, tabItem ->
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                Destination.entries.forEach { destination ->
+                    val selected = destination == current
                     NavigationBarItem(
-                        selected = currentTab == index,
-                        label = {
-                            Text(tabItem.label)
-                        },
+                        selected = selected,
+                        label = { Text(destination.label) },
                         alwaysShowLabel = false,
                         icon = {
                             Icon(
-                                imageVector = if (currentTab == index) tabItem.selectedIcon else tabItem.unselectedIcon,
-                                contentDescription = tabItem.label
+                                imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
+                                contentDescription = destination.label
                             )
                         },
                         onClick = {
-                            currentTab = index
-                            navController.navigate(tabItem.label) {
-                                navController.graph.startDestinationRoute?.let { route ->
-                                    popUpTo(route) {
-                                        saveState = true
-                                    }
-                                }
+                            navController.navigate(destination.route) {
+                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
                             }
-                        },
+                        }
                     )
                 }
             }
-        },
-        content = { padding ->
-            Box(modifier = Modifier.padding(padding)) {
-                Navigation(navController = navController, atvController = mainViewModel.atvController)
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding)) {
+            busyStatus?.let { status ->
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    status,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                Navigation(navController, viewModel)
             }
         }
-    )
-}
+    }
 
-enum class BottomNavigationItems(val label: String, val route: String, val selectedIcon: ImageVector, val unselectedIcon: ImageVector) {
-    REMOTE("Remote", "remote", Icons.Filled.SettingsRemote, Icons.Outlined.SettingsRemote),
-    AUDIO("Audio", "audio", Icons.Filled.Audiotrack, Icons.Outlined.Audiotrack),
-    SETTINGS("Settings", "settings", Icons.Filled.Settings, Icons.Outlined.Settings)
+    pinRequest?.let { request ->
+        PinSubmitDialog(
+            request = request,
+            onDismissRequest = viewModel::cancelPin,
+            onPinSubmitted = viewModel::submitPin
+        )
+    }
 }
 
 @Composable
-fun Navigation(navController: NavHostController, atvController: AtvController) {
-    val isConnected by atvController.isConnected.collectAsState()
-    NavHost(navController, startDestination = BottomNavigationItems.REMOTE.route) {
-        composable(BottomNavigationItems.REMOTE.route) {
-            if (isConnected) RemoteScreen(atvController)
-            else PairScreen(atvController)
+fun Navigation(navController: NavHostController, viewModel: MainViewModel) {
+    NavHost(navController, startDestination = Destination.REMOTE.route) {
+        composable(Destination.REMOTE.route) {
+            WhenConnected(viewModel) { RemoteScreen(viewModel) }
         }
-        composable(BottomNavigationItems.AUDIO.route) {
-            if (isConnected) AudioScreen(atvController)
-            else PairScreen(atvController)
+        composable(Destination.AUDIO.route) {
+            WhenConnected(viewModel) { connected -> AudioScreen(viewModel, connected) }
         }
-        composable(BottomNavigationItems.SETTINGS.route) {
-            SettingsScreen()
+        composable(Destination.SETTINGS.route) {
+            SettingsScreen(viewModel)
         }
+    }
+}
+
+/** Shows [content] while connected, otherwise the device picker / pairing screen. */
+@Composable
+private fun WhenConnected(viewModel: MainViewModel, content: @Composable (ConnectionState.Connected) -> Unit) {
+    val connection by viewModel.connection.collectAsState()
+    when (val state = connection) {
+        is ConnectionState.Connected -> content(state)
+        else -> PairScreen(viewModel)
     }
 }
