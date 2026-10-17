@@ -1,6 +1,42 @@
-<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <background android:drawable="@color/ic_launcher_background"/>
+    <foreground>
+        <aapt:attr name="android:drawable">
+            <vector
+                android:width="512dp"
+                android:height="512dp"
+                android:viewportWidth="512"
+                android:viewportHeight="512">
+                <group android:scaleX="0.5"
+                    android:scaleY="0.5"
+                    android:translateX="128"
+                    android:translateY="128">
+                    <path
+                        android:pathData="M82.0715 248.929C78.1663 252.834 78.1663 259.166 82.0715 263.071L248.949 429.949C252.854 433.854 259.186 433.854 263.091 429.949L429.968 263.071C433.873 259.166 433.873 252.834 429.968 248.929L263.091 82.052C259.186 78.1467 252.854 78.1467 248.949 82.052L82.0715 248.929ZM172.071 248.439C168.166 252.344 168.166 258.676 172.071 262.581L248.439 338.948C252.344 342.854 258.675 342.854 262.581 338.948L338.948 262.581C342.854 258.676 342.854 252.344 338.948 248.439L262.581 172.071C258.675 168.166 252.344 168.166 248.439 172.071L172.071 248.439Z"
+                        android:fillColor="@color/ic_launcher_foreground"
+                        android:fillType="evenOdd"/>
+                </group>
+            </vector>
+        </aapt:attr>
+    </foreground>
+    <monochrome>
+        <aapt:attr name="android:drawable">
+            <vector
+                android:width="512dp"
+                android:height="512dp"
+                android:viewportWidth="512"
+                android:viewportHeight="512">
+                <group android:scaleX="0.5"
+                    android:scaleY="0.5"
+                    android:translateX="128"
+                    android:translateY="128">
+                    <path
+                        android:pathData="M82.0715 248.929C78.1663 252.834 78.1663 259.166 82.0715 263.071L248.949 429.949C252.854 433.854 259.186 433.854 263.091 429.949L429.968 263.071C433.873 259.166 433.873 252.834 429.968 248.929L263.091 82.052C259.186 78.1467 252.854 78.1467 248.949 82.052L82.0715 248.929ZM172.071 248.439C168.166 252.344 168.166 258.676 172.071 262.581L248.439 338.948C252.344 342.854 258.675 342.854 262.581 338.948L338.948 262.581C342.854 258.676 342.854 252.344 338.948 248.439L262.581 172.071C258.675 168.166 252.344 168.166 248.439 172.071L172.071 248.439Z"
+                        android:fillColor="@android:color/black"
+                        android:fillType="evenOdd"/>
+                </group>
+            </vector>
+        </aapt:attr>
+    </monochrome>
 </adaptive-icon>
