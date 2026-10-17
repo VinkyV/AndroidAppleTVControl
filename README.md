@@ -1,6 +1,6 @@
 # AppleTVControl for Android!
-
 Connects to AppleTV using companion protocol!
+![img.png](img.png)
 
 # Built using [chaquopy](https://github.com/chaquo/chaquopy) & [pyatv](https://github.com/postlund/pyatv)
 ## Pairing
